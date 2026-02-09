@@ -1,7 +1,6 @@
 """
-WNBA / Chicago Sky Feed Bot
-Pulls from Twitter (via RSS bridges) and Reddit, posts to Slack.
-Runs on a schedule (every 10 minutes by default).
+WNBA / Chicago Sky Feed Bot v2
+Pulls from Twitter (via xcancel/RSS Bridge) and Reddit (via RSS), posts to Slack.
 """
 
 import os
@@ -13,7 +12,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION — Edit these to customize your feed!
@@ -26,20 +25,73 @@ SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 TWITTER_ACCOUNTS = [
     "chicagosky",
     "WNBA",
-    "WNBAChiSky",      # example — replace with real accounts you want
+     "DougFeinberg",      # example — replace with real accounts you want
+    "Kenswift"
+    "ItsMeghanLHall"
+    "AnnieCostabile"
+    "Alexaphilippou"
+    "uconnWBB"
+    "WomensHoops_USA"
+    "espnW"
+    "Stewie"
+    "PhoenixMercury"
+    "Rebecca Lobo"
+    "maggie_vanoni"
+    "Seattstorm"
+    "NYLiberty"
+    "ReneeMontgomery"
+    "LexieHull"
+    "CoachJfernandez"
+    "ClevelandWNBA"
+    "MAVoepel"
+    "Reese10Angel"
+    "Unrivaledwbb"
+    "linzsports"
+    "E_Williams_1"
+    "ScottAgness"
+    "Kareemcopeland"
+    "washMystics"
+    "Danaaakianaaa"
+    "FireWNBA"
+    "Seeratsohi"
+    "Chloepeterson67"
+    "Philawnba"
+    "Detroitwnba"
+    "Allisongaler"
+    "Disruptthegame"
+    "WNBAComms"
+    "Taresch"
+    "Kamillascsilva"
+    "Sheknowssports"
+    "Ariivory"
+    "Scoutripley"
+    "Noadalzell" 
+    "Quitalovessports"
+    "Robocoko"
+    "Nemchocke"
+    "NekiasNBA"
+    "StephenPG3"
+    "SydJColson"
+    "Hoop4thought"
+    "tonyREast"
+    "HunterCruse14"
+    "thathleticWBB"
+    "Classicjpow"
+    "Richardcohen1"
+    "Herhoopstats"
+    "Howardmegdal"
     # Add more accounts here:
     # "SomeReporter",
-    # "SkyFanAccount",
 ]
 
-# Reddit configuration
+# Reddit subreddits to monitor
 REDDIT_SUBREDDITS = ["wnba", "chicagosky"]
-REDDIT_KEYWORDS = ["chicago sky", "sky wnba", "angel reese", "chennedy carter"]
-# Set to True to also search r/all for keywords (broader but noisier)
-SEARCH_ALL_FOR_KEYWORDS = False
 
-# How far back to look on first run (in hours)
-LOOKBACK_HOURS = 2
+# Reddit keyword searches
+REDDIT_KEYWORDS = ["chicago sky", "angel reese", "chennedy carter"]
+
+# Google News search terms (reliable backup source)
+GOOGLE_NEWS_QUERIES = ["Chicago Sky WNBA"]
 
 # How often this runs (used for logging only — actual schedule set externally)
 CHECK_INTERVAL_MINUTES = 10
@@ -47,18 +99,13 @@ CHECK_INTERVAL_MINUTES = 10
 # File to track what we've already posted (persists between runs)
 SEEN_FILE = os.environ.get("SEEN_FILE", "seen_posts.json")
 
-# RSS bridge for Twitter — tries multiple Nitter instances
-# You can also use https://rss.app or https://rsshub.app as alternatives
-NITTER_INSTANCES = [
-    "https://nitter.privacydev.net",
-    "https://nitter.poast.org",
-    "https://nitter.woodland.cafe",
-]
+# User agent — Reddit and other sites require a descriptive one
+USER_AGENT = "WNBA-Sky-FeedBot/2.0 (Slack feed aggregator; contact: github.com)"
 
 # Logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger("feed_bot")
 
@@ -67,11 +114,9 @@ log = logging.getLogger("feed_bot")
 # ---------------------------------------------------------------------------
 
 def load_seen() -> set:
-    """Load previously seen post IDs."""
     try:
         with open(SEEN_FILE, "r") as f:
             data = json.load(f)
-            # Clean old entries (older than 7 days) to keep file small
             cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
             cleaned = {k: v for k, v in data.items() if v > cutoff}
             return set(cleaned.keys())
@@ -80,7 +125,6 @@ def load_seen() -> set:
 
 
 def save_seen(seen_ids: set):
-    """Save seen post IDs with timestamps."""
     try:
         with open(SEEN_FILE, "r") as f:
             data = json.load(f)
@@ -92,7 +136,6 @@ def save_seen(seen_ids: set):
         if sid not in data:
             data[sid] = now
 
-    # Prune entries older than 7 days
     cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     data = {k: v for k, v in data.items() if v > cutoff}
 
@@ -101,172 +144,167 @@ def save_seen(seen_ids: set):
 
 
 def make_id(text: str) -> str:
-    """Create a short hash ID from text."""
     return hashlib.md5(text.encode()).hexdigest()[:12]
 
 
+def fetch_url(url: str, timeout: int = 20) -> bytes:
+    """Fetch a URL with proper headers."""
+    req = Request(url, headers={
+        "User-Agent": USER_AGENT,
+        "Accept": "application/rss+xml, application/xml, application/atom+xml, text/xml, */*",
+    })
+    with urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
 # ---------------------------------------------------------------------------
-# TWITTER VIA NITTER RSS
+# TWITTER VIA WORKING NITTER INSTANCES / XCANCEL
 # ---------------------------------------------------------------------------
+
+# These are instances known to still work as of early 2026
+# xcancel.com is the most reliable remaining Nitter fork
+TWITTER_RSS_SOURCES = [
+    "https://xcancel.com",
+    "https://nitter.privacydev.net",
+    "https://nitter.poast.org",
+]
+
+
+def parse_rss_items(xml_data: bytes) -> list[dict]:
+    """Parse RSS/Atom items from XML data."""
+    items = []
+    try:
+        root = ET.fromstring(xml_data)
+    except ET.ParseError:
+        return items
+
+    # Handle RSS format
+    for item in root.findall(".//{http://www.w3.org/2005/Atom}entry"):
+        title = ""
+        link = ""
+        title_el = item.find("{http://www.w3.org/2005/Atom}title")
+        if title_el is not None and title_el.text:
+            title = title_el.text
+        link_el = item.find("{http://www.w3.org/2005/Atom}link")
+        if link_el is not None:
+            link = link_el.get("href", "")
+        updated = ""
+        updated_el = item.find("{http://www.w3.org/2005/Atom}updated")
+        if updated_el is not None and updated_el.text:
+            updated = updated_el.text
+        items.append({"title": title, "link": link, "date": updated})
+
+    # Also try standard RSS <item> elements
+    for item in root.findall(".//item"):
+        title = item.findtext("title", "")
+        link = item.findtext("link", "")
+        pub_date = item.findtext("pubDate", "")
+        items.append({"title": title, "link": link, "date": pub_date})
+
+    return items
+
 
 def fetch_twitter_rss(account: str) -> list[dict]:
-    """Fetch tweets from a Twitter account via Nitter RSS."""
+    """Fetch tweets from a Twitter account via working Nitter instances."""
     posts = []
 
-    for instance in NITTER_INSTANCES:
+    for instance in TWITTER_RSS_SOURCES:
         url = f"{instance}/{account}/rss"
         try:
-            req = Request(url, headers={"User-Agent": "WNBA-Feed-Bot/1.0"})
-            with urlopen(req, timeout=15) as resp:
-                xml_data = resp.read()
-            root = ET.fromstring(xml_data)
+            xml_data = fetch_url(url)
+            items = parse_rss_items(xml_data)
 
-            for item in root.findall(".//item"):
-                title = item.findtext("title", "")
-                link = item.findtext("link", "")
-                pub_date = item.findtext("pubDate", "")
-
-                # Convert Nitter link back to Twitter link
-                if instance in link:
-                    link = link.replace(instance, "https://twitter.com")
+            for item in items:
+                link = item["link"]
+                # Rewrite links to point to twitter.com
+                for inst in TWITTER_RSS_SOURCES:
+                    link = link.replace(inst, "https://twitter.com")
 
                 posts.append({
                     "source": "twitter",
                     "author": f"@{account}",
-                    "text": title[:280] if title else "(no text)",
+                    "text": (item["title"] or "(no text)")[:280],
                     "url": link,
-                    "date": pub_date,
-                    "id": make_id(link or title),
+                    "date": item["date"],
+                    "id": make_id(link or item["title"]),
                 })
 
-            log.info(f"Twitter: Got {len(posts)} posts from @{account} via {instance}")
-            return posts  # Success — stop trying other instances
+            if posts:
+                log.info(f"Twitter: Got {len(posts)} posts from @{account} via {instance}")
+                return posts
 
-        except (URLError, HTTPError, ET.ParseError) as e:
+        except (URLError, HTTPError) as e:
             log.warning(f"Twitter: Failed {instance}/{account}: {e}")
             continue
 
-    # If all Nitter instances fail, try RSSHub as fallback
-    try:
-        url = f"https://rsshub.app/twitter/user/{account}"
-        req = Request(url, headers={"User-Agent": "WNBA-Feed-Bot/1.0"})
-        with urlopen(req, timeout=15) as resp:
-            xml_data = resp.read()
-        root = ET.fromstring(xml_data)
-
-        for item in root.findall(".//item"):
-            title = item.findtext("title", "")
-            link = item.findtext("link", "")
-            pub_date = item.findtext("pubDate", "")
-            posts.append({
-                "source": "twitter",
-                "author": f"@{account}",
-                "text": title[:280] if title else "(no text)",
-                "url": link,
-                "date": pub_date,
-                "id": make_id(link or title),
-            })
-
-        log.info(f"Twitter: Got {len(posts)} posts from @{account} via RSSHub")
-    except (URLError, HTTPError, ET.ParseError) as e:
-        log.warning(f"Twitter: RSSHub also failed for @{account}: {e}")
+    if not posts:
+        log.warning(f"Twitter: All sources failed for @{account}")
 
     return posts
 
 
 def fetch_all_twitter() -> list[dict]:
-    """Fetch tweets from all configured accounts."""
     all_posts = []
     for account in TWITTER_ACCOUNTS:
         posts = fetch_twitter_rss(account)
         all_posts.extend(posts)
-        time.sleep(1)  # Be polite
+        time.sleep(2)  # Be polite between accounts
     return all_posts
 
 
 # ---------------------------------------------------------------------------
-# REDDIT VIA JSON API
+# REDDIT VIA RSS FEEDS (more reliable than JSON API from cloud servers)
 # ---------------------------------------------------------------------------
 
-def fetch_reddit_subreddit(subreddit: str) -> list[dict]:
-    """Fetch new posts from a subreddit."""
+def fetch_reddit_rss(url: str, label: str) -> list[dict]:
+    """Fetch posts from a Reddit RSS feed URL."""
     posts = []
-    url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=25"
     try:
-        req = Request(url, headers={"User-Agent": "WNBA-Feed-Bot/1.0"})
-        with urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
+        xml_data = fetch_url(url)
+        items = parse_rss_items(xml_data)
 
-        for child in data.get("data", {}).get("children", []):
-            post = child.get("data", {})
+        for item in items:
+            # Extract subreddit from link if possible
+            subreddit = "r/?"
+            link = item["link"]
+            if "/r/" in link:
+                parts = link.split("/r/")[1].split("/")
+                if parts:
+                    subreddit = f"r/{parts[0]}"
+
             posts.append({
                 "source": "reddit",
-                "author": f"u/{post.get('author', 'unknown')}",
-                "text": post.get("title", "(no title)"),
-                "url": f"https://reddit.com{post.get('permalink', '')}",
-                "subreddit": f"r/{subreddit}",
-                "score": post.get("score", 0),
-                "date": datetime.fromtimestamp(
-                    post.get("created_utc", 0), tz=timezone.utc
-                ).isoformat(),
-                "id": make_id(post.get("id", post.get("title", ""))),
+                "author": "",
+                "text": item["title"] or "(no title)",
+                "url": link,
+                "subreddit": subreddit,
+                "date": item["date"],
+                "id": make_id(link or item["title"]),
             })
 
-        log.info(f"Reddit: Got {len(posts)} posts from r/{subreddit}")
-    except (URLError, HTTPError, json.JSONDecodeError) as e:
-        log.warning(f"Reddit: Failed r/{subreddit}: {e}")
-
-    return posts
-
-
-def fetch_reddit_search(keyword: str) -> list[dict]:
-    """Search Reddit for a keyword."""
-    posts = []
-    search_sub = "all" if SEARCH_ALL_FOR_KEYWORDS else "+".join(REDDIT_SUBREDDITS)
-    url = (
-        f"https://www.reddit.com/r/{search_sub}/search.json?"
-        f"q={quote(keyword)}&sort=new&t=day&limit=15"
-    )
-    try:
-        req = Request(url, headers={"User-Agent": "WNBA-Feed-Bot/1.0"})
-        with urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-
-        for child in data.get("data", {}).get("children", []):
-            post = child.get("data", {})
-            posts.append({
-                "source": "reddit",
-                "author": f"u/{post.get('author', 'unknown')}",
-                "text": post.get("title", "(no title)"),
-                "url": f"https://reddit.com{post.get('permalink', '')}",
-                "subreddit": f"r/{post.get('subreddit', '?')}",
-                "score": post.get("score", 0),
-                "date": datetime.fromtimestamp(
-                    post.get("created_utc", 0), tz=timezone.utc
-                ).isoformat(),
-                "id": make_id(post.get("id", post.get("title", ""))),
-            })
-
-        log.info(f"Reddit: Got {len(posts)} results for '{keyword}'")
-    except (URLError, HTTPError, json.JSONDecodeError) as e:
-        log.warning(f"Reddit: Search failed for '{keyword}': {e}")
+        log.info(f"Reddit: Got {len(posts)} posts from {label}")
+    except (URLError, HTTPError) as e:
+        log.warning(f"Reddit: Failed {label}: {e}")
 
     return posts
 
 
 def fetch_all_reddit() -> list[dict]:
-    """Fetch from all configured subreddits and keyword searches."""
     all_posts = []
 
+    # Fetch subreddit feeds
     for sub in REDDIT_SUBREDDITS:
-        all_posts.extend(fetch_reddit_subreddit(sub))
-        time.sleep(1)
+        url = f"https://www.reddit.com/r/{sub}/new/.rss?sort=new&limit=25"
+        all_posts.extend(fetch_reddit_rss(url, f"r/{sub}"))
+        time.sleep(2)
 
+    # Fetch keyword search feeds
     for kw in REDDIT_KEYWORDS:
-        all_posts.extend(fetch_reddit_search(kw))
-        time.sleep(1)
+        url = f"https://www.reddit.com/search/.rss?q={quote(kw)}&sort=new&t=week&limit=15"
+        all_posts.extend(fetch_reddit_rss(url, f"search: {kw}"))
+        time.sleep(2)
 
-    # Deduplicate by ID
+    # Deduplicate
     seen = set()
     unique = []
     for p in all_posts:
@@ -278,30 +316,69 @@ def fetch_all_reddit() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# GOOGLE NEWS RSS (reliable backup for Chicago Sky news)
+# ---------------------------------------------------------------------------
+
+def fetch_google_news(query: str) -> list[dict]:
+    """Fetch news from Google News RSS."""
+    posts = []
+    url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
+    try:
+        xml_data = fetch_url(url)
+        root = ET.fromstring(xml_data)
+
+        for item in root.findall(".//item"):
+            title = item.findtext("title", "")
+            link = item.findtext("link", "")
+            pub_date = item.findtext("pubDate", "")
+            source = item.findtext("source", "")
+
+            posts.append({
+                "source": "news",
+                "author": source or "Google News",
+                "text": title,
+                "url": link,
+                "date": pub_date,
+                "id": make_id(link or title),
+            })
+
+        log.info(f"Google News: Got {len(posts)} results for '{query}'")
+    except (URLError, HTTPError, ET.ParseError) as e:
+        log.warning(f"Google News: Failed for '{query}': {e}")
+
+    return posts
+
+
+def fetch_all_news() -> list[dict]:
+    all_posts = []
+    for query in GOOGLE_NEWS_QUERIES:
+        all_posts.extend(fetch_google_news(query))
+        time.sleep(1)
+    return all_posts
+
+
+# ---------------------------------------------------------------------------
 # SLACK POSTING
 # ---------------------------------------------------------------------------
 
 def format_slack_message(post: dict) -> dict:
-    """Format a post as a simple Slack message."""
     if post["source"] == "twitter":
         emoji = "🐦"
         source_label = f"Twitter — {post['author']}"
-    else:
+    elif post["source"] == "reddit":
         emoji = "🤖"
-        source_label = f"Reddit — {post.get('subreddit', 'r/?')} — {post['author']}"
-        if post.get("score", 0) > 0:
-            source_label += f" (⬆ {post['score']})"
+        source_label = f"Reddit — {post.get('subreddit', 'r/?')}"
+    else:
+        emoji = "📰"
+        source_label = f"News — {post.get('author', '')}"
 
     text = f"{emoji} *{source_label}*\n{post['text']}\n{post['url']}"
-
     return {"text": text}
 
 
 def post_to_slack(message: dict) -> bool:
-    """Send a message to Slack via webhook."""
     if not SLACK_WEBHOOK_URL:
-        log.warning("No SLACK_WEBHOOK_URL set — printing to console instead:")
-        log.info(message.get("text", ""))
+        log.info(f"[DRY RUN] {message.get('text', '')}")
         return True
 
     try:
@@ -320,11 +397,10 @@ def post_to_slack(message: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# MAIN LOOP
+# MAIN
 # ---------------------------------------------------------------------------
 
 def run_once():
-    """Run one cycle: fetch, filter, post."""
     log.info("=" * 50)
     log.info("Starting feed check...")
 
@@ -334,9 +410,13 @@ def run_once():
     # Fetch from all sources
     twitter_posts = fetch_all_twitter()
     reddit_posts = fetch_all_reddit()
+    news_posts = fetch_all_news()
 
-    all_posts = twitter_posts + reddit_posts
-    log.info(f"Total fetched: {len(all_posts)} ({len(twitter_posts)} Twitter, {len(reddit_posts)} Reddit)")
+    all_posts = twitter_posts + reddit_posts + news_posts
+    log.info(
+        f"Total fetched: {len(all_posts)} "
+        f"({len(twitter_posts)} Twitter, {len(reddit_posts)} Reddit, {len(news_posts)} News)"
+    )
 
     # Filter to only new posts
     for post in all_posts:
@@ -352,17 +432,15 @@ def run_once():
         msg = format_slack_message(post)
         if post_to_slack(msg):
             posted += 1
-            time.sleep(0.5)  # Avoid Slack rate limits
+            time.sleep(0.5)
 
-    # Save updated seen list
     save_seen(seen)
     log.info(f"Done! Posted {posted} new items to Slack.")
 
 
 def run_loop():
-    """Run continuously on a schedule."""
     interval = CHECK_INTERVAL_MINUTES * 60
-    log.info(f"Starting feed bot — checking every {CHECK_INTERVAL_MINUTES} minutes")
+    log.info(f"Starting feed bot v2 — checking every {CHECK_INTERVAL_MINUTES} minutes")
     while True:
         try:
             run_once()
