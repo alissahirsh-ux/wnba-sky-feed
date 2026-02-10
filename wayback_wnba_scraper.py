@@ -39,6 +39,14 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -578,6 +586,117 @@ def save_summary(by_team, filepath):
     logger.info("Saved summary: %s", filepath)
 
 
+def save_spreadsheet(by_team, all_jobs, filepath):
+    """
+    Save results as an Excel .xlsx spreadsheet with multiple sheets:
+      - "All Jobs"  – every posting in one flat table
+      - "Summary"   – per-team posting counts
+      - One sheet per team with that team's listings
+
+    Requires openpyxl.  If unavailable, prints an install hint and skips.
+    """
+    if not HAS_OPENPYXL:
+        logger.warning(
+            "openpyxl not installed – skipping .xlsx export.  "
+            "Install with:  pip install openpyxl"
+        )
+        return
+
+    wb = Workbook()
+
+    # --- Styles ---
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin_border = Border(
+        bottom=Side(style="thin", color="D9D9D9"),
+    )
+    link_font = Font(color="0563C1", underline="single")
+
+    def _style_header(ws, num_cols):
+        for col in range(1, num_cols + 1):
+            cell = ws.cell(row=1, column=col)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+        ws.freeze_panes = "A2"
+
+    def _auto_width(ws):
+        for col_cells in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col_cells[0].column)
+            for cell in col_cells:
+                val = str(cell.value) if cell.value else ""
+                max_len = max(max_len, min(len(val), 60))
+            ws.column_dimensions[col_letter].width = max_len + 3
+
+    def _write_job_rows(ws, jobs, start_row=2):
+        for i, job in enumerate(
+            sorted(jobs, key=lambda j: j.get("snapshot_date", "")), start=start_row
+        ):
+            ws.cell(row=i, column=1, value=job.get("team", ""))
+            ws.cell(row=i, column=2, value=job.get("title", ""))
+            ws.cell(row=i, column=3, value=job.get("location", ""))
+            ws.cell(row=i, column=4, value=job.get("snapshot_date", ""))
+            url_cell = ws.cell(row=i, column=5, value=job.get("original_url", ""))
+            url_cell.font = link_font
+            if job.get("original_url"):
+                url_cell.hyperlink = job["original_url"]
+            for col in range(1, 6):
+                ws.cell(row=i, column=col).border = thin_border
+
+    # ---- Sheet 1: All Jobs ----
+    ws_all = wb.active
+    ws_all.title = "All Jobs"
+    headers = ["Team", "Job Title", "Location", "Date Seen", "URL"]
+    for c, h in enumerate(headers, 1):
+        ws_all.cell(row=1, column=c, value=h)
+    _style_header(ws_all, len(headers))
+    _write_job_rows(ws_all, all_jobs)
+    _auto_width(ws_all)
+
+    # ---- Sheet 2: Summary ----
+    ws_sum = wb.create_sheet("Summary")
+    ws_sum.cell(row=1, column=1, value="Team")
+    ws_sum.cell(row=1, column=2, value="Job Postings")
+    _style_header(ws_sum, 2)
+    for i, (team, jobs) in enumerate(by_team.items(), start=2):
+        ws_sum.cell(row=i, column=1, value=team)
+        ws_sum.cell(row=i, column=2, value=len(jobs))
+        for col in (1, 2):
+            ws_sum.cell(row=i, column=col).border = thin_border
+    total_row = len(by_team) + 2
+    ws_sum.cell(row=total_row, column=1, value="TOTAL").font = Font(bold=True)
+    ws_sum.cell(row=total_row, column=2, value=len(all_jobs)).font = Font(bold=True)
+    _auto_width(ws_sum)
+
+    # ---- One sheet per team ----
+    for team, jobs in by_team.items():
+        # Sheet names max 31 chars, no special chars
+        safe_name = re.sub(r'[\\/*?:\[\]]', '', team)[:31]
+        ws_team = wb.create_sheet(safe_name)
+        team_headers = ["Job Title", "Location", "Date Seen", "URL"]
+        for c, h in enumerate(team_headers, 1):
+            ws_team.cell(row=1, column=c, value=h)
+        _style_header(ws_team, len(team_headers))
+        for i, job in enumerate(
+            sorted(jobs, key=lambda j: j.get("snapshot_date", "")), start=2
+        ):
+            ws_team.cell(row=i, column=1, value=job.get("title", ""))
+            ws_team.cell(row=i, column=2, value=job.get("location", ""))
+            ws_team.cell(row=i, column=3, value=job.get("snapshot_date", ""))
+            url_cell = ws_team.cell(row=i, column=4, value=job.get("original_url", ""))
+            url_cell.font = link_font
+            if job.get("original_url"):
+                url_cell.hyperlink = job["original_url"]
+            for col in range(1, 5):
+                ws_team.cell(row=i, column=col).border = thin_border
+        _auto_width(ws_team)
+
+    wb.save(filepath)
+    logger.info("Saved spreadsheet: %s", filepath)
+
+
 def print_summary(by_team):
     """Print a brief summary to stdout."""
     total_jobs = sum(len(v) for v in by_team.values())
@@ -796,6 +915,7 @@ def main():
     save_json(by_team, os.path.join(args.output_dir, "jobs_by_team.json"))
     save_csv(all_jobs, os.path.join(args.output_dir, "all_jobs.csv"))
     save_summary(by_team, os.path.join(args.output_dir, "summary.md"))
+    save_spreadsheet(by_team, all_jobs, os.path.join(args.output_dir, "wnba_jobs.xlsx"))
 
     # Also save the raw (non-deduped) data for reference
     save_json(
@@ -812,6 +932,7 @@ def main():
     # Print summary
     print_summary(by_team)
     print(f"Results saved to: {os.path.abspath(args.output_dir)}/")
+    print(f"  - wnba_jobs.xlsx      (Excel spreadsheet with per-team sheets)")
     print(f"  - jobs_by_team.json   (jobs grouped by team)")
     print(f"  - all_jobs.csv        (flat CSV of all postings)")
     print(f"  - summary.md          (human-readable report)")
