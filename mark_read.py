@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mark all emails in a mailbox as unread (unseen) via IMAP.
+Mark all emails in a mailbox as read (seen) via IMAP.
 
 Usage:
   Set environment variables, then run:
@@ -8,7 +8,7 @@ Usage:
     export EMAIL_HOST="imap.gmail.com"
     export EMAIL_USER="you@gmail.com"
     export EMAIL_PASSWORD="your-app-password"
-    python mark_unread.py
+    python mark_read.py
 
   Optional:
     EMAIL_PORT      - IMAP SSL port (default: 993)
@@ -30,8 +30,8 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def mark_all_unread(host, port, user, password, folder):
-    """Connect to the IMAP server and remove the \\Seen flag from all emails."""
+def mark_all_read(host, port, user, password, folder):
+    """Connect to the IMAP server and add the \\Seen flag to all emails."""
     log.info("Connecting to %s:%s as %s ...", host, port, user)
     conn = imaplib.IMAP4_SSL(host, port)
     conn.login(user, password)
@@ -52,33 +52,33 @@ def mark_all_unread(host, port, user, password, folder):
         conn.logout()
         return
 
-    # Search for all messages that are currently SEEN (read)
-    status, data = conn.search(None, "SEEN")
+    # Search for all messages that are currently UNSEEN (unread)
+    status, data = conn.search(None, "UNSEEN")
     if status != "OK":
         log.error("Search failed: %s", data)
         conn.close()
         conn.logout()
         sys.exit(1)
 
-    seen_ids = data[0].split()
-    if not seen_ids:
-        log.info("All messages are already unread.")
+    unseen_ids = data[0].split()
+    if not unseen_ids:
+        log.info("All messages are already read.")
         conn.close()
         conn.logout()
         return
 
-    log.info("Found %d read messages. Marking them as unread ...", len(seen_ids))
+    log.info("Found %d unread messages. Marking them as read ...", len(unseen_ids))
 
-    # Build a comma-separated UID-style message set for a single STORE call
-    msg_set = b",".join(seen_ids)
-    status, _ = conn.store(msg_set, "-FLAGS", "\\Seen")
+    # Build a comma-separated message set for a single STORE call
+    msg_set = b",".join(unseen_ids)
+    status, _ = conn.store(msg_set, "+FLAGS", "\\Seen")
     if status != "OK":
-        log.error("Failed to remove \\Seen flag.")
+        log.error("Failed to add \\Seen flag.")
         conn.close()
         conn.logout()
         sys.exit(1)
 
-    log.info("Done. %d messages marked as unread.", len(seen_ids))
+    log.info("Done. %d messages marked as read.", len(unseen_ids))
     conn.close()
     conn.logout()
 
@@ -98,7 +98,7 @@ def main():
         print(__doc__.strip())
         sys.exit(1)
 
-    mark_all_unread(host, user, password, folder=folder, port=port)
+    mark_all_read(host, user, password, folder=folder, port=port)
 
 
 if __name__ == "__main__":
