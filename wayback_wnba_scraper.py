@@ -54,7 +54,7 @@ except ImportError:
 TARGET_URL = "www.teamworkonline.com/basketball-jobs/wnbateamjobs/wnba-team-jobs"
 CDX_API_URL = "https://web.archive.org/cdx/search/cdx"
 WAYBACK_BASE = "https://web.archive.org/web"
-DEFAULT_YEARS_BACK = 3
+DEFAULT_MONTHS_BACK = 6
 DEFAULT_REQUEST_DELAY = 2  # seconds between requests (be respectful)
 DEFAULT_OUTPUT_DIR = "wnba_jobs_data"
 USER_AGENT = "WNBA-Jobs-Research-Bot/1.0 (Historical job posting research)"
@@ -837,7 +837,7 @@ def discover_and_scrape_team_subpages(snapshots, delay, max_snapshots):
 
 def parse_args():
     now = datetime.now(timezone.utc)
-    default_from = (now - timedelta(days=DEFAULT_YEARS_BACK * 365)).strftime("%Y%m%d")
+    default_from = (now - timedelta(days=DEFAULT_MONTHS_BACK * 30)).strftime("%Y%m%d")
     default_to = now.strftime("%Y%m%d")
 
     p = argparse.ArgumentParser(
